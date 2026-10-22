@@ -1,15 +1,16 @@
 // Run: node test.mjs. Feeds pennies.mjs made-up transcripts and checks the messages.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const dir = mkdtempSync(join(tmpdir(), 'pennies-'));
 const script = fileURLToPath(new URL('pennies.mjs', import.meta.url));
-const run = (hook) => new Promise((resolve, reject) => {
-  const child = execFile(process.execPath, [script], (err, out) => (err ? reject(err) : resolve(JSON.parse(out).systemMessage)));
+const run = (hook, args = [], env = {}) => new Promise((resolve, reject) => {
+  const child = execFile(process.execPath, [script, ...args], { env: { ...process.env, ...env } },
+    (err, out) => (err ? reject(err) : resolve(out && JSON.parse(out).systemMessage)));
   child.stdin.end(JSON.stringify({ session_id: 's1', cwd: dir, hook_event_name: 'Stop', ...hook }));
 });
 
@@ -64,6 +65,31 @@ const late = run({ prompt_id: 'p2', transcript_path: claude });
 setTimeout(() => appendFileSync(claude, answer('m4', 'claude-opus-5-5', 'end_turn', 2, 40_000, 0, 0, 1_000, { speed: 'fast' })), 150); // $0.056
 assert.equal(await late, '$0.093 this response · $0.186 session · 190K in (89% cached) · 1.1K out');
 assert.equal(await run({ prompt_id: 'p1', transcript_path: claude }), '$0.094 this response · $0.186 session · 61K in (82% cached) · 800 out');
+
+// Omarchy: its Claude record gives the plan windows, every transcript gives the spend.
+const home = join(dir, 'home'), hour = 36e5, now = Date.now();
+const usageDir = join(home, '.local/state/omarchy/agents/usage');
+const projects = join(home, '.claude/projects');
+mkdirSync(usageDir, { recursive: true });
+mkdirSync(join(projects, 'p/s1/subagents'), { recursive: true });
+const ago = (hours) => new Date(now - hours * hour).toISOString();
+const at = (hours, line) => line.replace('2026-10-22T10:00:00.000Z', ago(hours));
+const opus = (id, output_tokens) => answer(id, 'claude-opus-5-5', 'end_turn', 0, 0, 0, 0, output_tokens); // $20 per 1M out
+writeFileSync(join(usageDir, 'claude.json'), JSON.stringify({ id: 'claude', tierLabel: 'Pro', updatedAt: ago(0.5), limits: [
+  { label: 'Session (5-hour)', percent: 0.5, resetsAt: ago(-2) }, // started 3 hours ago
+  { label: 'Weekly (7-day)', percent: 0.25, resetsAt: ago(-24) }, // started 6 days ago
+] }));
+writeFileSync(join(projects, 'p/s1.jsonl'), [
+  at(2, opus('m1', 50_000)),    // $1.00
+  at(4, opus('m2', 100_000)),   // $2.00, before the session
+  at(0.2, opus('m4', 50_000)),  // $1.00, after Omarchy last checked
+  at(192, opus('m5', 500_000)), // $10, before the week
+].join('\n'));
+writeFileSync(join(projects, 'p/s2.jsonl'), at(2, opus('m1', 50_000)));                     // resumed session repeating m1
+writeFileSync(join(projects, 'p/s1/subagents/agent-a.jsonl'), at(1, opus('m3', 25_000))); // $0.50
+await run({ transcript_path: join(projects, 'p/s1.jsonl') }, ['--omarchy'], { HOME: home, XDG_STATE_HOME: '', CLAUDE_CONFIG_DIR: '' });
+const panel = JSON.parse(readFileSync(join(usageDir, 'pennies.json'), 'utf8'));
+assert.deepEqual(panel.limits.map((l) => l.title), ['Session · $2.50 of ≈$3', 'Weekly · $4.50 of ≈$14']);
 
 rmSync(dir, { recursive: true });
 console.log('ok');

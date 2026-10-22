@@ -101,13 +101,30 @@ If you set `CODEX_HOME`, use that folder instead of `~/.codex`.
 
 If you set `CLAUDE_CONFIG_DIR`, use that folder instead of `~/.claude`.
 
+### Omarchy panel (optional)
+
+On [Omarchy](https://omarchy.org), the Agents panel shows how much of your Claude plan's 5-hour session and week you have used. pennies can put a price on both. Add a second hook next to the first one in `~/.claude/settings.json`:
+
+```json
+{
+  "type": "command",
+  "command": "node \"$HOME/.claude/pennies.mjs\" --omarchy",
+  "async": true,
+  "timeout": 30
+}
+```
+
+It runs in the background after each response and writes `~/.local/state/omarchy/agents/usage/pennies.json`, which the panel shows as a "Claude Code $" tab: what each window has cost so far at API prices, and about what it would cost at 100%. The tab appears at the panel's next refresh (press `r` in the panel to see it now).
+
+Only Claude Code on this machine counts, while the plan's percentages count every Claude app and device, so the 100% figure runs low if you also use claude.ai.
+
 ## How it works
 
 Codex and Claude Code write each session to a transcript file, including the token usage of every model response. When a response ends, they run this hook and pass it the transcript path and the id of the turn (Codex) or prompt (Claude Code). The script adds up that turn's usage, prices it, and hands back a message to display.
 
 Claude Code runs the hook a moment before it writes the last message to the transcript, so the script waits for it: usually under a tenth of a second, a second at most.
 
-No network, no dependencies, and it never writes anything. It's one file, so read it before you install it.
+No network, no dependencies, and it writes nothing unless you turn on the Omarchy panel. It's one file, so read it before you install it.
 
 ## Prices
 

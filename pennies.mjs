@@ -1,7 +1,10 @@
 // pennies-for-your-prompt: Codex and Claude Code Stop hook that shows what each response cost.
-// Reads the transcript the agent already keeps on disk. No network, writes nothing.
+// Reads the transcript the agent already keeps on disk. No network, and it writes
+// nothing except the Omarchy record that --omarchy asks for.
 // SPDX-License-Identifier: MIT-0
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 // USD per 1M tokens, standard tier, from openai.com/api/pricing on 2026-10-22.
@@ -102,18 +105,64 @@ function claudeResponses(lines, hook) {
     try { item = JSON.parse(line); } catch { continue; } // a line Claude Code is still writing
     if (item.type === 'user') prompt = item.promptId ?? prompt;
     else if (item.type === 'assistant' && item.message?.usage && item.message.model !== '<synthetic>') {
-      byId.set(item.message.id, { message: item.message, prompt });
+      byId.set(item.message.id, { message: item.message, prompt, time: Date.parse(item.timestamp) });
     }
   }
-  return [...byId.values()].map(({ message: m, prompt: p }) => {
+  return [...byId.values()].map(({ message: m, prompt: p, time }) => {
     const model = m.model.replace(/-\d{8}$/, ''), u = m.usage; // claude-haiku-4-5-20251001
     const read = u.cache_read_input_tokens ?? 0;
     return {
-      model, inTurn: p !== undefined && p === hook.prompt_id, cost: CLAUDE_PRICES[model] && claudeCost(CLAUDE_PRICES[model], u),
+      id: m.id, time, model, inTurn: p !== undefined && p === hook.prompt_id, cost: CLAUDE_PRICES[model] && claudeCost(CLAUDE_PRICES[model], u),
       input: u.input_tokens + read + (u.cache_creation_input_tokens ?? 0), cached: read, output: u.output_tokens,
       done: m.stop_reason != null && m.stop_reason !== 'tool_use',
     };
   });
+}
+
+// --omarchy: prices the Claude plan windows (5-hour session, week) that Omarchy's Agents
+// panel shows, and writes them as one more record for that panel. Only Claude Code on this
+// machine counts, while the plan's percentages count every Claude app and device.
+function writeOmarchy() {
+  const dir = join(process.env.XDG_STATE_HOME || join(homedir(), '.local/state'), 'omarchy/agents/usage');
+  let claude;
+  try { claude = JSON.parse(readFileSync(join(dir, 'claude.json'), 'utf8')); } catch { return; } // no Omarchy, or no Claude record yet
+  const now = Date.now(), checked = Date.parse(claude.updatedAt);
+  const windows = (claude.limits ?? []).map((limit) => {
+    const hours = { 'Session (5-hour)': 5, 'Weekly (7-day)': 168 }[limit.label];
+    const reset = Date.parse(limit.resetsAt);
+    // A window that already reset starts again with the next message, so count from the reset.
+    return { limit, hours, live: reset > now, start: reset > now ? reset - hours * 36e5 : reset };
+  });
+
+  const from = Math.min(...windows.filter((w) => w.hours).map((w) => w.start));
+  const projects = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+  const byId = new Map(); // resumed sessions repeat messages across transcripts; subagents have their own
+  for (const name of readdirSync(projects, { recursive: true })) {
+    const file = join(projects, name);
+    if (!name.endsWith('.jsonl') || statSync(file).mtimeMs < from) continue;
+    for (const r of claudeResponses(readFileSync(file, 'utf8').split('\n'), {})) byId.set(r.id, r);
+  }
+
+  const limits = windows.map(({ limit, hours, live, start }) => {
+    if (!hours) return limit;
+    let spent = 0, spentByCheck = 0;
+    for (const r of byId.values()) {
+      if (r.time < start || r.cost === undefined) continue;
+      spent += r.cost;
+      if (r.time <= checked) spentByCheck += r.cost;
+    }
+    // The percentage is as of claude.json's updatedAt, so extrapolate from what was spent by then.
+    const full = live && limit.percent >= 0.05 ? spentByCheck / limit.percent : 0;
+    return { ...limit, title: `${hours === 5 ? 'Session' : 'Weekly'} · ${usd(spent)}` + (full ? ` of ≈$${Math.round(full)}` : '') };
+  });
+
+  const record = {
+    schemaVersion: 1, id: 'pennies', name: 'Claude Code $', ready: true, hasLocalStats: false,
+    tierLabel: `${claude.tierLabel || 'Plan'} at API prices`, updatedAt: new Date(now).toISOString(), limits,
+  };
+  const tmp = join(dir, `.pennies.${process.pid}`); // renamed into place, so the panel never reads half a file
+  writeFileSync(tmp, JSON.stringify(record));
+  renameSync(tmp, join(dir, 'pennies.json'));
 }
 
 const usd = (x) => '$' + x.toFixed(x < 1 ? 3 : 2);
@@ -131,6 +180,10 @@ try {
   for (let i = 0; hook.prompt_id && !responses.findLast((r) => r.inTurn)?.done && i < 20; i++) {
     await sleep(50);
     responses = read();
+  }
+  if (process.argv[2] === '--omarchy') {
+    writeOmarchy();
+    process.exit(0);
   }
 
   const unpriced = new Set();
