@@ -1,20 +1,24 @@
 # pennies-for-your-prompt
 
-A [Codex](https://github.com/openai/codex) hook that tells you what each response cost.
+A [Codex](https://github.com/openai/codex) and [Claude Code](https://code.claude.com) hook that tells you what each response cost.
 
-After every answer, Codex shows a line like:
+After every answer, you get a line like:
 
 ```
 $0.342 this response · $0.476 session · 400K in (85% cached) · 3.1K out
 ```
 
-These are estimates at OpenAI API list prices. On a ChatGPT plan you don't pay per token, so read them as "what this would have cost on the API".
+These are estimates at API list prices: OpenAI's for Codex, Anthropic's for Claude Code. On a ChatGPT or Claude subscription you don't pay per token, so read them as "what this would have cost on the API".
 
-**Status: v0.1, work in progress.** Prices are hardcoded in the script, and it rereads the whole transcript after every response.
+**Status: v0.2, work in progress.** Prices are hardcoded in the script, and it rereads the whole transcript after every response.
 
 ## Install
 
-You need Node.js and a Codex release from September 2026 or later.
+You need Node.js.
+
+### Codex
+
+You also need a Codex release from September 2026 or later.
 
 1. Save `pennies.mjs` in your Codex folder.
 
@@ -55,24 +59,70 @@ You need Node.js and a Codex release from September 2026 or later.
 
 If you set `CODEX_HOME`, use that folder instead of `~/.codex`.
 
+### Claude Code
+
+1. Save `pennies.mjs` in your Claude folder.
+
+   macOS / Linux:
+
+   ```sh
+   curl -fsSLo ~/.claude/pennies.mjs https://raw.githubusercontent.com/elMestre/pennies-for-your-prompt/main/pennies.mjs
+   ```
+
+   Windows (PowerShell):
+
+   ```powershell
+   iwr https://raw.githubusercontent.com/elMestre/pennies-for-your-prompt/main/pennies.mjs -OutFile "$HOME\.claude\pennies.mjs"
+   ```
+
+2. Add the hook to `~/.claude/settings.json` (merge it into the `hooks` you already have):
+
+   ```json
+   {
+     "hooks": {
+       "Stop": [
+         {
+           "hooks": [
+             {
+               "type": "command",
+               "command": "node \"$HOME/.claude/pennies.mjs\"",
+               "timeout": 10
+             }
+           ]
+         }
+       ]
+     }
+   }
+   ```
+
+   The same command works on Windows, where Claude Code runs hooks with Git Bash or PowerShell.
+
+3. Start a new Claude Code session.
+
+If you set `CLAUDE_CONFIG_DIR`, use that folder instead of `~/.claude`.
+
 ## How it works
 
-Codex writes each session to a transcript file, including the token usage of every model response. When a response ends, Codex runs this hook and passes it the transcript path and the turn id. The script adds up that turn's usage, prices it, and hands Codex a message to display.
+Codex and Claude Code write each session to a transcript file, including the token usage of every model response. When a response ends, they run this hook and pass it the transcript path and the id of the turn (Codex) or prompt (Claude Code). The script adds up that turn's usage, prices it, and hands back a message to display.
 
-No network, no dependencies, and it never writes anything. It's one short file, so read it before you install it.
+Claude Code runs the hook a moment before it writes the last message to the transcript, so the script waits for it: usually under a tenth of a second, a second at most.
+
+No network, no dependencies, and it never writes anything. It's one file, so read it before you install it.
 
 ## Prices
 
-Rates live in `PRICES` at the top of `pennies.mjs`, in USD per million tokens, from [OpenAI's pricing page](https://developers.openai.com/api/docs/pricing) (checked 2026-10-22). Requests over 272K input tokens get long-context rates where the model has them.
+Rates live at the top of `pennies.mjs`, in USD per million tokens:
 
-Not applied: priority, flex and batch tiers, and the 12-hour cache-write rate (the 30-minute rate is used).
+- `PRICES`, for Codex, from [OpenAI's pricing page](https://developers.openai.com/api/docs/pricing) (checked 2026-10-22). Requests over 272K input tokens get long-context rates where the model has them. Not applied: priority, flex and batch tiers, and the 12-hour cache-write rate (the 30-minute rate is used).
+- `CLAUDE_PRICES`, for Claude Code, from [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing) (checked 2026-10-22). Applied: 5-minute and 1-hour cache writes, Haiku 5.5's rates for prompts over 100K tokens, fast mode, US-only inference and web searches.
 
-If your model is missing, Codex will show `no price for <model>`. Add a line to `PRICES`, and please send a pull request.
+If your model is missing, you'll see `no price for <model>`. Add a line to the table, and please send a pull request.
 
 ## Limitations
 
 - Subagent work isn't counted; subagents keep their own transcripts.
-- The transcript format is internal to Codex and may change between releases.
+- Some Claude Code calls never reach the transcript, such as the one WebFetch makes to read a page, so `/cost` can come out slightly higher.
+- The transcript formats are internal to Codex and Claude Code and may change between releases.
 
 ## Test
 
@@ -90,4 +140,4 @@ node test.mjs
 
 ---
 
-Not affiliated with or endorsed by OpenAI. Codex is a trademark of OpenAI.
+Not affiliated with or endorsed by OpenAI or Anthropic. Codex is a trademark of OpenAI; Claude is a trademark of Anthropic.
